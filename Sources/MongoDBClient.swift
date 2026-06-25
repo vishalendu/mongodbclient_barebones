@@ -6,12 +6,14 @@ struct Connection {
     var name: String
     var uri: String
     var database: String
+    var isConnected: Bool
 
-    init(id: UUID = UUID(), name: String, uri: String, database: String) {
+    init(id: UUID = UUID(), name: String, uri: String, database: String, isConnected: Bool = false) {
         self.id = id
         self.name = name
         self.uri = uri
         self.database = database
+        self.isConnected = isConnected
     }
 }
 
@@ -175,7 +177,7 @@ enum ConnectionStore {
 
         return stored.compactMap { item in
             guard let uri = keychainValue(account: item.id.uuidString) else { return nil }
-            return Connection(id: item.id, name: item.name, uri: uri, database: item.database)
+            return Connection(id: item.id, name: item.name, uri: uri, database: item.database, isConnected: false)
         }
     }
 
@@ -401,7 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         buildWindow()
         addWorksheet()
         table.reloadData()
-        rebuildTargets(selecting: connections.first?.id)
+        rebuildTargets(selecting: connectedConnections().first?.id)
         refreshTree()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -419,13 +421,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let cell = NSTextField(labelWithString: connections[row].name)
+        let suffix = connections[row].isConnected ? "" : " (disconnected)"
+        let cell = NSTextField(labelWithString: connections[row].name + suffix)
         cell.lineBreakMode = .byTruncatingTail
         return cell
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        selectConnection(table.selectedRow)
+        let row = table.selectedRow
+        guard connections.indices.contains(row) else { return }
+        if connections[row].isConnected {
+            selectConnection(row)
+        } else {
+            currentWorksheet?.status.stringValue = "Profile disconnected: \(connections[row].name)"
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -517,8 +526,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         table.dataSource = self
 
         let add = button("Add", #selector(addConnection))
-        let remove = button("Disconnect", #selector(disconnectConnection))
-        let buttons = row([add, remove])
+        let connect = button("Connect", #selector(connectConnection))
+        let disconnect = button("Disconnect", #selector(disconnectConnection))
+        let remove = button("Remove", #selector(removeConnection))
+        let buttons = row([add, connect, disconnect, remove])
         buttons.translatesAutoresizingMaskIntoConstraints = false
 
         let refresh = button("Refresh", #selector(refreshTree))
@@ -635,7 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         )
 
         worksheets.append(worksheet)
-        populateTargets(for: worksheet, selecting: connections.first?.id)
+        populateTargets(for: worksheet, selecting: connectedConnections().first?.id)
 
         let item = NSTabViewItem(identifier: worksheet.id.uuidString)
         item.label = worksheet.name
@@ -681,26 +692,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     private func populateTargets(for worksheet: Worksheet, selecting selectedID: UUID?) {
         worksheet.targetPopup.removeAllItems()
-        guard !connections.isEmpty else {
+        let active = connectedConnections()
+        guard !active.isEmpty else {
             worksheet.targetPopup.addItem(withTitle: "No connection")
             worksheet.status.stringValue = "Disconnected"
             return
         }
 
-        for connection in connections {
+        for connection in active {
             worksheet.targetPopup.addItem(withTitle: connection.name)
         }
 
-        let selectedIndex = selectedID.flatMap { id in connections.firstIndex { $0.id == id } } ?? 0
+        let selectedIndex = selectedID.flatMap { id in active.firstIndex { $0.id == id } } ?? 0
         worksheet.targetPopup.selectItem(at: selectedIndex)
-        worksheet.databaseField.stringValue = connections[selectedIndex].database
-        worksheet.status.stringValue = "Connected: \(connections[selectedIndex].name)"
+        worksheet.databaseField.stringValue = active[selectedIndex].database
+        worksheet.status.stringValue = "Connected: \(active[selectedIndex].name)"
+    }
+
+    private func connectedConnections() -> [Connection] {
+        connections.filter(\.isConnected)
+    }
+
+    private func selectedConnectedConnection(for worksheet: Worksheet) -> (index: Int, connection: Connection)? {
+        let active = connectedConnections()
+        let selected = worksheet.targetPopup.indexOfSelectedItem
+        guard active.indices.contains(selected),
+              let index = connections.firstIndex(where: { $0.id == active[selected].id }) else { return nil }
+        return (index, active[selected])
     }
 
     @objc private func addConnection() {
         let alert = NSAlert()
         alert.messageText = "Add MongoDB Connection"
-        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
         let form = NSStackView()
@@ -717,13 +741,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         alert.accessoryView = form
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let connection = Connection(name: name.stringValue, uri: uri.stringValue, database: db.stringValue)
+        let connection = Connection(name: name.stringValue, uri: uri.stringValue, database: db.stringValue, isConnected: false)
         connections.append(connection)
         ConnectionStore.save(connections)
         table.reloadData()
-        rebuildTargets(selecting: connection.id)
+        rebuildTargets(selecting: connectedConnections().first?.id)
         refreshTree()
-        currentWorksheet?.status.stringValue = "Connected: \(connection.name)"
+        currentWorksheet?.status.stringValue = "Saved profile: \(connection.name)"
     }
 
     private func field(_ placeholder: String, _ value: String) -> NSTextField {
@@ -735,24 +759,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     @objc private func disconnectConnection() {
         let row = table.selectedRow
         guard connections.indices.contains(row) else { return }
+        connections[row].isConnected = false
+        table.reloadData()
+        rebuildTargets(selecting: connectedConnections().first?.id)
+        refreshTree()
+        currentWorksheet?.status.stringValue = "Disconnected: \(connections[row].name)"
+    }
+
+    @objc private func connectConnection() {
+        let row = table.selectedRow
+        guard connections.indices.contains(row) else { return }
+        connections[row].isConnected = true
+        table.reloadData()
+        rebuildTargets(selecting: connections[row].id)
+        refreshTree()
+        currentWorksheet?.status.stringValue = "Connected: \(connections[row].name)"
+    }
+
+    @objc private func removeConnection() {
+        let row = table.selectedRow
+        guard connections.indices.contains(row) else { return }
         let removed = connections.remove(at: row)
         ConnectionStore.delete(removed)
         ConnectionStore.save(connections)
         table.reloadData()
-        rebuildTargets(selecting: connections.first?.id)
+        rebuildTargets(selecting: connectedConnections().first?.id)
         refreshTree()
-        currentWorksheet?.status.stringValue = connections.isEmpty ? "Disconnected" : "Connected"
+        currentWorksheet?.status.stringValue = "Removed: \(removed.name)"
     }
 
     @objc private func refreshTree() {
-        guard !connections.isEmpty else {
-            treeRoots = [TreeNode("No connections")]
+        let active = connectedConnections()
+        guard !active.isEmpty else {
+            treeRoots = [TreeNode(connections.isEmpty ? "No connections" : "No connected profiles")]
             outline.reloadData()
-            currentWorksheet?.status.stringValue = "Add a connection to load databases"
+            currentWorksheet?.status.stringValue = connections.isEmpty ? "Add a connection to load databases" : "Connect a profile to load databases"
             return
         }
 
-        treeRoots = connections.map {
+        treeRoots = active.map {
             TreeNode($0.name, connectionID: $0.id, children: [TreeNode("Loading...")])
         }
         outline.reloadData()
@@ -760,7 +805,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             outline.expandItem(root)
         }
 
-        for connection in connections {
+        for connection in active {
             metadataRunner.listDatabases(uri: connection.uri) { [weak self] result in
                 guard let self,
                       let root = self.treeRoots.first(where: { $0.connectionID == connection.id }) else { return }
@@ -791,7 +836,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc func targetChanged() {
         guard let worksheet = currentWorksheet else { return }
-        selectConnection(worksheet.targetPopup.indexOfSelectedItem)
+        guard let selected = selectedConnectedConnection(for: worksheet) else { return }
+        selectConnection(selected.index)
     }
 
     private func selectConnection(_ index: Int) {
@@ -805,9 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     private func rebuildTargets(selecting selectedID: UUID?) {
         for worksheet in worksheets {
-            let currentID = connections.indices.contains(worksheet.targetPopup.indexOfSelectedItem)
-                ? connections[worksheet.targetPopup.indexOfSelectedItem].id
-                : nil
+            let currentID = selectedConnectedConnection(for: worksheet)?.connection.id
             populateTargets(for: worksheet, selecting: selectedID ?? currentID)
         }
 
@@ -820,15 +864,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc func runQuery() {
         guard let worksheet = currentWorksheet else { return }
-        let index = worksheet.targetPopup.indexOfSelectedItem
-        guard connections.indices.contains(index) else {
+        guard let selected = selectedConnectedConnection(for: worksheet) else {
             worksheet.outputView.string = "Add a connection first."
             return
         }
 
-        var connection = connections[index]
+        var connection = selected.connection
         connection.database = worksheet.databaseField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        connections[index] = connection
+        connections[selected.index] = connection
         ConnectionStore.save(connections)
         table.reloadData()
 
