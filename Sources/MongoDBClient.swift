@@ -58,6 +58,8 @@ final class Worksheet: NSObject {
     let queryView: NSTextView
     let outputView: NSTextView
     let view: NSView
+    private let panesView = NSView()
+    private var queryHeightConstraint: NSLayoutConstraint?
 
     init(name: String, target: AnyObject, queryScroll: NSScrollView, queryView: NSTextView, outputScroll: NSScrollView, outputView: NSTextView) {
         self.name = name
@@ -102,41 +104,83 @@ final class Worksheet: NSObject {
         targetRow.orientation = .horizontal
         targetRow.spacing = 8
         targetRow.alignment = .centerY
+        targetRow.setContentHuggingPriority(.required, for: .vertical)
+        targetRow.setContentCompressionResistancePriority(.required, for: .vertical)
 
         let actionRow = NSStackView(views: [run, cancel, save, load, saveOutput, clear])
         actionRow.orientation = .horizontal
         actionRow.spacing = 8
         actionRow.alignment = .centerY
+        actionRow.setContentHuggingPriority(.required, for: .vertical)
+        actionRow.setContentCompressionResistancePriority(.required, for: .vertical)
 
         let toolbar = NSStackView(views: [targetRow, actionRow])
         toolbar.orientation = .vertical
         toolbar.spacing = 8
         toolbar.alignment = .leading
         toolbar.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.setContentHuggingPriority(.required, for: .vertical)
+        toolbar.setContentCompressionResistancePriority(.required, for: .vertical)
 
         let queryPane = Worksheet.pane(label: "Worksheet", scroll: queryScroll)
         let outputPane = Worksheet.pane(label: "Output", scroll: outputScroll)
-        let split = NSSplitView()
-        split.isVertical = false
-        split.dividerStyle = .thin
-        split.translatesAutoresizingMaskIntoConstraints = false
-        split.addArrangedSubview(queryPane)
-        split.addArrangedSubview(outputPane)
-        queryPane.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
-        outputPane.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.addGestureRecognizer(NSPanGestureRecognizer(target: self, action: #selector(resizeOutput(_:))))
+
+        panesView.translatesAutoresizingMaskIntoConstraints = false
+        queryPane.translatesAutoresizingMaskIntoConstraints = false
+        outputPane.translatesAutoresizingMaskIntoConstraints = false
+        panesView.addSubview(queryPane)
+        panesView.addSubview(divider)
+        panesView.addSubview(outputPane)
+
+        queryHeightConstraint = queryPane.heightAnchor.constraint(equalToConstant: 300)
+        queryHeightConstraint?.isActive = true
 
         root.addSubview(toolbar)
-        root.addSubview(split)
+        root.addSubview(panesView)
 
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
             toolbar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -8),
             toolbar.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            split.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            split.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
-            split.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 8),
-            split.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8)
+            panesView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            panesView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+            panesView.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 8),
+            panesView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
+            queryPane.leadingAnchor.constraint(equalTo: panesView.leadingAnchor),
+            queryPane.trailingAnchor.constraint(equalTo: panesView.trailingAnchor),
+            queryPane.topAnchor.constraint(equalTo: panesView.topAnchor),
+            divider.leadingAnchor.constraint(equalTo: panesView.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: panesView.trailingAnchor),
+            divider.topAnchor.constraint(equalTo: queryPane.bottomAnchor, constant: 6),
+            divider.heightAnchor.constraint(equalToConstant: 5),
+            outputPane.leadingAnchor.constraint(equalTo: panesView.leadingAnchor),
+            outputPane.trailingAnchor.constraint(equalTo: panesView.trailingAnchor),
+            outputPane.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 6),
+            outputPane.bottomAnchor.constraint(equalTo: panesView.bottomAnchor),
+            outputPane.heightAnchor.constraint(greaterThanOrEqualToConstant: 160)
         ])
+    }
+
+    func setInitialDividerPosition() {
+        view.layoutSubtreeIfNeeded()
+        panesView.layoutSubtreeIfNeeded()
+        let height = panesView.bounds.height
+        guard height > 420 else { return }
+        queryHeightConstraint?.constant = height * 0.48
+    }
+
+    @objc private func resizeOutput(_ gesture: NSPanGestureRecognizer) {
+        guard let constraint = queryHeightConstraint else { return }
+        let translation = gesture.translation(in: panesView)
+        let proposed = constraint.constant + translation.y
+        let maxHeight = max(220, panesView.bounds.height - 180)
+        constraint.constant = min(max(proposed, 180), maxHeight)
+        gesture.setTranslation(.zero, in: panesView)
     }
 
     private static func label(_ text: String) -> NSTextField {
@@ -653,6 +697,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         item.view = worksheet.view
         tabView.addTabViewItem(item)
         tabView.selectTabViewItem(item)
+        DispatchQueue.main.async {
+            worksheet.setInitialDividerPosition()
+        }
     }
 
     @objc func closeWorksheet() {
