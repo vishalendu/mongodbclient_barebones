@@ -88,44 +88,52 @@ final class Worksheet: NSObject {
         save.bezelStyle = .rounded
         let load = NSButton(title: "Load", target: target, action: #selector(AppDelegate.loadWorksheet))
         load.bezelStyle = .rounded
+        let saveOutput = NSButton(title: "Save Output", target: target, action: #selector(AppDelegate.saveOutput))
+        saveOutput.bezelStyle = .rounded
         let clear = NSButton(title: "Clear", target: target, action: #selector(AppDelegate.clearOutput))
         clear.bezelStyle = .rounded
 
-        let toolbar = NSStackView(views: [targetPopup, databaseField, modePopup, run, cancel, save, load, clear, status])
-        toolbar.orientation = .horizontal
+        status.lineBreakMode = .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let targetRow = NSStackView(views: [targetPopup, databaseField, modePopup, status])
+        targetRow.orientation = .horizontal
+        targetRow.spacing = 8
+        targetRow.alignment = .centerY
+
+        let actionRow = NSStackView(views: [run, cancel, save, load, saveOutput, clear])
+        actionRow.orientation = .horizontal
+        actionRow.spacing = 8
+        actionRow.alignment = .centerY
+
+        let toolbar = NSStackView(views: [targetRow, actionRow])
+        toolbar.orientation = .vertical
         toolbar.spacing = 8
-        toolbar.alignment = .centerY
+        toolbar.alignment = .leading
         toolbar.translatesAutoresizingMaskIntoConstraints = false
 
-        queryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
-        outputScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
-        queryScroll.translatesAutoresizingMaskIntoConstraints = false
-        outputScroll.translatesAutoresizingMaskIntoConstraints = false
+        let queryPane = Worksheet.pane(label: "Worksheet", scroll: queryScroll)
+        let outputPane = Worksheet.pane(label: "Output", scroll: outputScroll)
+        let split = NSSplitView()
+        split.isVertical = false
+        split.dividerStyle = .thin
+        split.translatesAutoresizingMaskIntoConstraints = false
+        split.addArrangedSubview(queryPane)
+        split.addArrangedSubview(outputPane)
+        queryPane.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        outputPane.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
 
-        let queryLabel = Worksheet.label("Worksheet")
-        let outputLabel = Worksheet.label("Output")
-        queryLabel.translatesAutoresizingMaskIntoConstraints = false
-        outputLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        for child in [toolbar, queryLabel, queryScroll, outputLabel, outputScroll] {
-            root.addSubview(child)
-        }
+        root.addSubview(toolbar)
+        root.addSubview(split)
 
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
             toolbar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -8),
             toolbar.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            queryLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            queryLabel.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 8),
-            queryScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            queryScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
-            queryScroll.topAnchor.constraint(equalTo: queryLabel.bottomAnchor, constant: 8),
-            outputLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            outputLabel.topAnchor.constraint(equalTo: queryScroll.bottomAnchor, constant: 10),
-            outputScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            outputScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
-            outputScroll.topAnchor.constraint(equalTo: outputLabel.bottomAnchor, constant: 8),
-            outputScroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8)
+            split.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            split.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+            split.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 8),
+            split.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8)
         ])
     }
 
@@ -133,6 +141,25 @@ final class Worksheet: NSObject {
         let label = NSTextField(labelWithString: text)
         label.font = .boldSystemFont(ofSize: 12)
         return label
+    }
+
+    private static func pane(label text: String, scroll: NSScrollView) -> NSView {
+        let view = NSView()
+        let label = Worksheet.label(text)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        view.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            label.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        return view
     }
 }
 
@@ -356,7 +383,7 @@ final class MongoRunner {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSplitViewDelegate {
     private var window: NSWindow!
     private var connections: [Connection] = []
     private var treeRoots: [TreeNode] = []
@@ -364,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     private let table = NSTableView()
     private let outline = NSOutlineView()
+    private let mainSplit = NSSplitView()
     private let tabView = NSTabView()
     private let metadataRunner = MongoRunner()
 
@@ -377,6 +405,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         refreshTree()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            self.mainSplit.setPosition(320, ofDividerAt: 0)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -412,7 +443,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let node = item as? TreeNode
         let cell = NSTextField(labelWithString: node?.title ?? "")
-        cell.lineBreakMode = .byTruncatingMiddle
+        cell.lineBreakMode = .byClipping
+        cell.toolTip = node?.title
         return cell
     }
 
@@ -427,6 +459,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        240
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        max(240, min(600, splitView.bounds.width - 520))
+    }
+
     private func buildWindow() {
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
@@ -437,9 +477,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         window.title = "MongoDB Client"
         window.center()
 
-        let root = NSSplitView()
+        let root = mainSplit
         root.isVertical = true
         root.dividerStyle = .thin
+        root.delegate = self
         root.translatesAutoresizingMaskIntoConstraints = false
         window.contentView?.addSubview(root)
         NSLayoutConstraint.activate([
@@ -454,12 +495,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         work.setContentHuggingPriority(.defaultLow, for: .horizontal)
         root.addArrangedSubview(side)
         root.addArrangedSubview(work)
+        root.setPosition(320, ofDividerAt: 0)
     }
 
     private func sidebar() -> NSView {
         let view = NSView()
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        view.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
         let title = NSTextField(labelWithString: "Connections")
         title.font = .boldSystemFont(ofSize: 14)
@@ -485,12 +526,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         treeTitle.translatesAutoresizingMaskIntoConstraints = false
         let treeScroll = NSScrollView()
         treeScroll.hasVerticalScroller = true
+        treeScroll.hasHorizontalScroller = true
         treeScroll.borderType = .bezelBorder
         treeScroll.translatesAutoresizingMaskIntoConstraints = false
         treeScroll.documentView = outline
         outline.headerView = nil
-        outline.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        let treeColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
+        treeColumn.width = 900
+        outline.addTableColumn(treeColumn)
         outline.outlineTableColumn = outline.tableColumns[0]
+        outline.columnAutoresizingStyle = .noColumnAutoresizing
         outline.delegate = self
         outline.dataSource = self
 
@@ -701,8 +746,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc private func refreshTree() {
         guard !connections.isEmpty else {
-            treeRoots = []
+            treeRoots = [TreeNode("No connections")]
             outline.reloadData()
+            currentWorksheet?.status.stringValue = "Add a connection to load databases"
             return
         }
 
@@ -732,12 +778,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                         )
                     }
                 case .failure(let message):
-                    root.children = [TreeNode(message.trimmingCharacters(in: .whitespacesAndNewlines))]
+                    let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                    root.children = [TreeNode(trimmed.isEmpty ? "Could not load databases" : trimmed)]
                 }
 
                 self.outline.reloadData()
                 self.outline.expandItem(root)
-                self.currentWorksheet?.status.stringValue = "Database tree refreshed"
+                self.currentWorksheet?.status.stringValue = root.children.isEmpty ? "No databases found" : "Database tree refreshed"
             }
         }
     }
@@ -800,6 +847,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc func clearOutput() {
         currentWorksheet?.outputView.string = ""
+    }
+
+    @objc func saveOutput() {
+        guard let worksheet = currentWorksheet else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json, .plainText]
+        panel.nameFieldStringValue = "output.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try worksheet.outputView.string.write(to: url, atomically: true, encoding: .utf8)
+            worksheet.status.stringValue = "Output saved"
+        } catch {
+            worksheet.outputView.string = error.localizedDescription
+        }
     }
 
     @objc func saveWorksheet() {
