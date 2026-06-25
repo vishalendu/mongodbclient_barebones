@@ -45,6 +45,97 @@ final class TreeNode: NSObject {
     }
 }
 
+final class Worksheet: NSObject {
+    let id = UUID()
+    var name: String
+    let runner = MongoRunner()
+    let targetPopup = NSPopUpButton()
+    let databaseField = NSTextField()
+    let modePopup = NSPopUpButton()
+    let status = NSTextField(labelWithString: "Ready")
+    let queryView: NSTextView
+    let outputView: NSTextView
+    let view: NSView
+
+    init(name: String, target: AnyObject, queryScroll: NSScrollView, queryView: NSTextView, outputScroll: NSScrollView, outputView: NSTextView) {
+        self.name = name
+        self.queryView = queryView
+        self.outputView = outputView
+
+        let root = NSView()
+        root.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        root.setContentHuggingPriority(.defaultLow, for: .vertical)
+        self.view = root
+
+        super.init()
+
+        targetPopup.target = target
+        targetPopup.action = #selector(AppDelegate.targetChanged)
+        targetPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+        databaseField.placeholderString = "database"
+        databaseField.stringValue = "test"
+        databaseField.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        modePopup.addItems(withTitles: ["JSON", "Shell"])
+
+        let run = NSButton(title: "Run", target: target, action: #selector(AppDelegate.runQuery))
+        run.bezelStyle = .rounded
+        run.keyEquivalent = "\r"
+        run.keyEquivalentModifierMask = [.command]
+
+        let cancel = NSButton(title: "Cancel", target: target, action: #selector(AppDelegate.cancelQuery))
+        cancel.bezelStyle = .rounded
+        let save = NSButton(title: "Save", target: target, action: #selector(AppDelegate.saveWorksheet))
+        save.bezelStyle = .rounded
+        let load = NSButton(title: "Load", target: target, action: #selector(AppDelegate.loadWorksheet))
+        load.bezelStyle = .rounded
+        let clear = NSButton(title: "Clear", target: target, action: #selector(AppDelegate.clearOutput))
+        clear.bezelStyle = .rounded
+
+        let toolbar = NSStackView(views: [targetPopup, databaseField, modePopup, run, cancel, save, load, clear, status])
+        toolbar.orientation = .horizontal
+        toolbar.spacing = 8
+        toolbar.alignment = .centerY
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+
+        queryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+        outputScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        queryScroll.translatesAutoresizingMaskIntoConstraints = false
+        outputScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let queryLabel = Worksheet.label("Worksheet")
+        let outputLabel = Worksheet.label("Output")
+        queryLabel.translatesAutoresizingMaskIntoConstraints = false
+        outputLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        for child in [toolbar, queryLabel, queryScroll, outputLabel, outputScroll] {
+            root.addSubview(child)
+        }
+
+        NSLayoutConstraint.activate([
+            toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            toolbar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -8),
+            toolbar.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
+            queryLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            queryLabel.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 8),
+            queryScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            queryScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+            queryScroll.topAnchor.constraint(equalTo: queryLabel.bottomAnchor, constant: 8),
+            outputLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            outputLabel.topAnchor.constraint(equalTo: queryScroll.bottomAnchor, constant: 10),
+            outputScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            outputScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+            outputScroll.topAnchor.constraint(equalTo: outputLabel.bottomAnchor, constant: 8),
+            outputScroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8)
+        ])
+    }
+
+    private static func label(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .boldSystemFont(ofSize: 12)
+        return label
+    }
+}
+
 enum ConnectionStore {
     private static let defaultsKey = "connections"
     private static let service = "MongoDBClient.ConnectionURI"
@@ -128,8 +219,9 @@ final class MongoRunner {
         let proc = Process()
         let out = Pipe()
         let err = Pipe()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["mongosh", targetURI(uri: uri, database: database), "--quiet", "--eval", script(for: query, json: json)]
+        let command = mongoshCommand(arguments: [targetURI(uri: uri, database: database), "--quiet", "--eval", script(for: query, json: json)])
+        proc.executableURL = command.executable
+        proc.arguments = command.arguments
         proc.standardOutput = out
         proc.standardError = err
         process = proc
@@ -158,17 +250,23 @@ final class MongoRunner {
         let proc = Process()
         let out = Pipe()
         let err = Pipe()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["mongosh", targetURI(uri: uri, database: "admin"), "--quiet", "--eval", """
+        let command = mongoshCommand(arguments: [targetURI(uri: uri, database: "admin"), "--quiet", "--eval", """
         (async () => {
-          const names = await db.getMongo().getDBNames();
+          const names = (await db.adminCommand({ listDatabases: 1, nameOnly: true })).databases.map(d => d.name).sort();
           const result = [];
           for (const name of names.sort()) {
-            result.push({ name, collections: (await db.getSiblingDB(name).getCollectionNames()).sort() });
+            try {
+              const batch = (await db.getSiblingDB(name).runCommand({ listCollections: 1, nameOnly: true })).cursor.firstBatch;
+              result.push({ name, collections: batch.map(c => c.name).sort() });
+            } catch (e) {
+              result.push({ name, collections: [`<error: ${e.message}>`] });
+            }
           }
           console.log(JSON.stringify(result));
         })().catch(e => { console.error(e); process.exit(1); })
-        """]
+        """])
+        proc.executableURL = command.executable
+        proc.arguments = command.arguments
         proc.standardOutput = out
         proc.standardError = err
         proc.terminationHandler = { process in
@@ -179,7 +277,8 @@ final class MongoRunner {
                     completion(.failure(errors.isEmpty ? output : errors))
                     return
                 }
-                guard let data = output.data(using: .utf8),
+                let json = output.split(whereSeparator: \.isNewline).last.map(String.init) ?? output
+                guard let data = json.data(using: .utf8),
                       let dbs = try? JSONDecoder().decode([DatabaseInfo].self, from: data) else {
                     completion(.failure(output.isEmpty ? "No database metadata returned." : output))
                     return
@@ -217,6 +316,19 @@ final class MongoRunner {
         """
     }
 
+    private func mongoshCommand(arguments: [String]) -> (executable: URL, arguments: [String]) {
+        for path in ["/opt/homebrew/bin/mongosh", "/usr/local/bin/mongosh", "/usr/bin/mongosh"] {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return (URL(fileURLWithPath: path), arguments)
+            }
+        }
+
+        return (
+            URL(fileURLWithPath: "/usr/bin/env"),
+            ["PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "mongosh"] + arguments
+        )
+    }
+
     private func targetURI(uri: String, database: String) -> String {
         let db = database.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !db.isEmpty else { return uri }
@@ -226,7 +338,14 @@ final class MongoRunner {
         let query = parts.count == 2 ? "?\(parts[1])" : ""
         let afterScheme = base.split(separator: "://", maxSplits: 1, omittingEmptySubsequences: false).last.map(String.init) ?? base
 
-        if afterScheme.contains("/") {
+        if let slash = afterScheme.firstIndex(of: "/") {
+            let path = afterScheme[slash...]
+            if path == "/" {
+                if base.hasSuffix("/") {
+                    base.removeLast()
+                }
+                return "\(base)/\(db)\(query)"
+            }
             return uri
         }
 
@@ -239,23 +358,20 @@ final class MongoRunner {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
     private var window: NSWindow!
-    private let runner = MongoRunner()
     private var connections: [Connection] = []
     private var treeRoots: [TreeNode] = []
+    private var worksheets: [Worksheet] = []
 
     private let table = NSTableView()
     private let outline = NSOutlineView()
-    private let targetPopup = NSPopUpButton()
-    private let databaseField = NSTextField()
-    private let modePopup = NSPopUpButton()
-    private let status = NSTextField(labelWithString: "Disconnected")
-    private let queryView = NSTextView()
-    private let outputView = NSTextView()
+    private let tabView = NSTabView()
+    private let metadataRunner = MongoRunner()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        buildWindow()
         connections = ConnectionStore.load()
+        buildWindow()
+        addWorksheet()
         table.reloadData()
         rebuildTargets(selecting: connections.first?.id)
         refreshTree()
@@ -304,10 +420,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard let node = outline.item(atRow: outline.selectedRow) as? TreeNode,
               let connectionID = node.connectionID,
               let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
-        targetPopup.selectItem(at: index)
+        currentWorksheet?.targetPopup.selectItem(at: index)
         selectConnection(index)
         if let database = node.database {
-            databaseField.stringValue = database
+            currentWorksheet?.databaseField.stringValue = database
         }
     }
 
@@ -321,10 +437,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         window.title = "MongoDB Client"
         window.center()
 
-        let root = NSStackView()
-        root.orientation = .horizontal
-        root.spacing = 0
-        root.distribution = .fill
+        let root = NSSplitView()
+        root.isVertical = true
+        root.dividerStyle = .thin
         root.translatesAutoresizingMaskIntoConstraints = false
         window.contentView?.addSubview(root)
         NSLayoutConstraint.activate([
@@ -342,19 +457,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     private func sidebar() -> NSView {
-        let view = NSStackView()
-        view.orientation = .vertical
-        view.spacing = 8
-        view.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        let view = NSView()
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        view.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        view.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
         let title = NSTextField(labelWithString: "Connections")
         title.font = .boldSystemFont(ofSize: 14)
+        title.alignment = .left
+        title.translatesAutoresizingMaskIntoConstraints = false
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
-        scroll.heightAnchor.constraint(equalToConstant: 130).isActive = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = table
         table.headerView = nil
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
@@ -364,12 +478,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let add = button("Add", #selector(addConnection))
         let remove = button("Disconnect", #selector(disconnectConnection))
         let buttons = row([add, remove])
+        buttons.translatesAutoresizingMaskIntoConstraints = false
 
         let refresh = button("Refresh", #selector(refreshTree))
         let treeTitle = row([label("Databases"), refresh])
+        treeTitle.translatesAutoresizingMaskIntoConstraints = false
         let treeScroll = NSScrollView()
         treeScroll.hasVerticalScroller = true
         treeScroll.borderType = .bezelBorder
+        treeScroll.translatesAutoresizingMaskIntoConstraints = false
         treeScroll.documentView = outline
         outline.headerView = nil
         outline.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
@@ -377,57 +494,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         outline.delegate = self
         outline.dataSource = self
 
-        view.addArrangedSubview(title)
-        view.addArrangedSubview(scroll)
-        view.addArrangedSubview(buttons)
-        view.addArrangedSubview(treeTitle)
-        view.addArrangedSubview(treeScroll)
+        for child in [title, scroll, buttons, treeTitle, treeScroll] {
+            view.addSubview(child)
+        }
+
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            title.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            title.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+            scroll.heightAnchor.constraint(equalToConstant: 96),
+            buttons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            buttons.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
+            treeTitle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            treeTitle.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
+            treeTitle.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: 12),
+            treeScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            treeScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            treeScroll.topAnchor.constraint(equalTo: treeTitle.bottomAnchor, constant: 8),
+            treeScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12)
+        ])
         return view
     }
 
     private func workspace() -> NSView {
-        let view = NSStackView()
-        view.orientation = .vertical
-        view.spacing = 8
-        view.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        let view = NSView()
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        targetPopup.target = self
-        targetPopup.action = #selector(targetChanged)
-        targetPopup.addItem(withTitle: "No connection")
+        let newWorksheet = button("New Worksheet", #selector(addWorksheet))
+        let closeWorksheet = button("Close Worksheet", #selector(closeWorksheet))
+        let controls = row([newWorksheet, closeWorksheet])
+        controls.translatesAutoresizingMaskIntoConstraints = false
 
-        databaseField.placeholderString = "database"
-        databaseField.stringValue = "test"
+        tabView.tabViewType = .topTabsBezelBorder
+        tabView.drawsBackground = false
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+        tabView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tabView.setContentHuggingPriority(.defaultLow, for: .vertical)
 
-        modePopup.addItems(withTitles: ["JSON", "Shell"])
-
-        let run = button("Run", #selector(runQuery))
-        run.keyEquivalent = "\r"
-        run.keyEquivalentModifierMask = [.command]
-
-        let cancel = button("Cancel", #selector(cancelQuery))
-        let save = button("Save", #selector(saveWorksheet))
-        let load = button("Load", #selector(loadWorksheet))
-        let clear = button("Clear", #selector(clearOutput))
-
-        view.addArrangedSubview(row([targetPopup, databaseField, modePopup, run, cancel, save, load, clear, status]))
-
-        queryView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        queryView.string = "db.getCollectionNames()"
-        queryView.isRichText = false
-        queryView.isAutomaticQuoteSubstitutionEnabled = false
-        queryView.isAutomaticDashSubstitutionEnabled = false
-        outputView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        outputView.isEditable = false
-
-        let queryScroll = scroll(queryView)
-        let outputScroll = scroll(outputView)
-        queryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
-        outputScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
-
-        view.addArrangedSubview(label("Worksheet"))
-        view.addArrangedSubview(queryScroll)
-        view.addArrangedSubview(label("Output"))
-        view.addArrangedSubview(outputScroll)
+        view.addSubview(controls)
+        view.addSubview(tabView)
+        NSLayoutConstraint.activate([
+            controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            controls.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            controls.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
+            tabView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            tabView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            tabView.topAnchor.constraint(equalTo: controls.bottomAnchor, constant: 8),
+            tabView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            tabView.heightAnchor.constraint(greaterThanOrEqualToConstant: 620)
+        ])
         return view
     }
 
@@ -448,16 +567,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     private func label(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .boldSystemFont(ofSize: 12)
+        label.alignment = .left
         return label
     }
 
-    private func scroll(_ textView: NSTextView) -> NSScrollView {
-        let scroll = NSScrollView()
+    private var currentWorksheet: Worksheet? {
+        guard let item = tabView.selectedTabViewItem else { return nil }
+        return worksheets.first { $0.id.uuidString == item.identifier as? String }
+    }
+
+    @objc func addWorksheet() {
+        let number = worksheets.count + 1
+        let query = textEditor(initialText: "db.getCollectionNames()", editable: true)
+        let output = textEditor(initialText: "", editable: false)
+        let worksheet = Worksheet(
+            name: "Worksheet \(number)",
+            target: self,
+            queryScroll: query.scroll,
+            queryView: query.text,
+            outputScroll: output.scroll,
+            outputView: output.text
+        )
+
+        worksheets.append(worksheet)
+        populateTargets(for: worksheet, selecting: connections.first?.id)
+
+        let item = NSTabViewItem(identifier: worksheet.id.uuidString)
+        item.label = worksheet.name
+        item.view = worksheet.view
+        tabView.addTabViewItem(item)
+        tabView.selectTabViewItem(item)
+    }
+
+    @objc func closeWorksheet() {
+        guard worksheets.count > 1,
+              let item = tabView.selectedTabViewItem,
+              let id = item.identifier as? String,
+              let index = worksheets.firstIndex(where: { $0.id.uuidString == id }) else { return }
+        worksheets[index].runner.cancel()
+        worksheets.remove(at: index)
+        tabView.removeTabViewItem(item)
+    }
+
+    private func textEditor(initialText: String, editable: Bool) -> (scroll: NSScrollView, text: NSTextView) {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.borderType = .bezelBorder
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.documentView = textView
-        return scroll
+
+        let textView = scroll.documentView as! NSTextView
+        textView.string = initialText
+        textView.isEditable = editable
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.textColor = .textColor
+        textView.backgroundColor = .textBackgroundColor
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = false
+
+        return (scroll, textView)
+    }
+
+    private func populateTargets(for worksheet: Worksheet, selecting selectedID: UUID?) {
+        worksheet.targetPopup.removeAllItems()
+        guard !connections.isEmpty else {
+            worksheet.targetPopup.addItem(withTitle: "No connection")
+            worksheet.status.stringValue = "Disconnected"
+            return
+        }
+
+        for connection in connections {
+            worksheet.targetPopup.addItem(withTitle: connection.name)
+        }
+
+        let selectedIndex = selectedID.flatMap { id in connections.firstIndex { $0.id == id } } ?? 0
+        worksheet.targetPopup.selectItem(at: selectedIndex)
+        worksheet.databaseField.stringValue = connections[selectedIndex].database
+        worksheet.status.stringValue = "Connected: \(connections[selectedIndex].name)"
     }
 
     @objc private func addConnection() {
@@ -486,7 +678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         table.reloadData()
         rebuildTargets(selecting: connection.id)
         refreshTree()
-        status.stringValue = "Connected: \(connection.name)"
+        currentWorksheet?.status.stringValue = "Connected: \(connection.name)"
     }
 
     private func field(_ placeholder: String, _ value: String) -> NSTextField {
@@ -504,7 +696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         table.reloadData()
         rebuildTargets(selecting: connections.first?.id)
         refreshTree()
-        status.stringValue = connections.isEmpty ? "Disconnected" : "Connected"
+        currentWorksheet?.status.stringValue = connections.isEmpty ? "Disconnected" : "Connected"
     }
 
     @objc private func refreshTree() {
@@ -523,7 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
 
         for connection in connections {
-            runner.listDatabases(uri: connection.uri) { [weak self] result in
+            metadataRunner.listDatabases(uri: connection.uri) { [weak self] result in
                 guard let self,
                       let root = self.treeRoots.first(where: { $0.connectionID == connection.id }) else { return }
 
@@ -545,88 +737,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
                 self.outline.reloadData()
                 self.outline.expandItem(root)
-                self.status.stringValue = "Database tree refreshed"
+                self.currentWorksheet?.status.stringValue = "Database tree refreshed"
             }
         }
     }
 
-    @objc private func targetChanged() {
-        selectConnection(targetPopup.indexOfSelectedItem)
+    @objc func targetChanged() {
+        guard let worksheet = currentWorksheet else { return }
+        selectConnection(worksheet.targetPopup.indexOfSelectedItem)
     }
 
     private func selectConnection(_ index: Int) {
         guard connections.indices.contains(index) else { return }
-        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        databaseField.stringValue = connections[index].database
-        status.stringValue = "Connected: \(connections[index].name)"
+        if table.selectedRow != index {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
+        currentWorksheet?.databaseField.stringValue = connections[index].database
+        currentWorksheet?.status.stringValue = "Connected: \(connections[index].name)"
     }
 
     private func rebuildTargets(selecting selectedID: UUID?) {
-        targetPopup.removeAllItems()
-        for connection in connections {
-            targetPopup.addItem(withTitle: connection.name)
+        for worksheet in worksheets {
+            let currentID = connections.indices.contains(worksheet.targetPopup.indexOfSelectedItem)
+                ? connections[worksheet.targetPopup.indexOfSelectedItem].id
+                : nil
+            populateTargets(for: worksheet, selecting: selectedID ?? currentID)
         }
+
         if let id = selectedID, let index = connections.firstIndex(where: { $0.id == id }) {
-            targetPopup.selectItem(at: index)
-            selectConnection(index)
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         } else if connections.isEmpty {
-            targetPopup.addItem(withTitle: "No connection")
+            table.deselectAll(nil)
         }
     }
 
-    @objc private func runQuery() {
-        let index = targetPopup.indexOfSelectedItem
+    @objc func runQuery() {
+        guard let worksheet = currentWorksheet else { return }
+        let index = worksheet.targetPopup.indexOfSelectedItem
         guard connections.indices.contains(index) else {
-            outputView.string = "Add a connection first."
+            worksheet.outputView.string = "Add a connection first."
             return
         }
 
         var connection = connections[index]
-        connection.database = databaseField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        connection.database = worksheet.databaseField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         connections[index] = connection
         ConnectionStore.save(connections)
         table.reloadData()
 
-        status.stringValue = "Running..."
-        let json = modePopup.titleOfSelectedItem == "JSON"
-        runner.run(uri: connection.uri, database: connection.database, query: queryView.string, json: json) { [weak self] text in
-            self?.outputView.string = text
-            self?.status.stringValue = "Done"
+        worksheet.status.stringValue = "Running..."
+        let json = worksheet.modePopup.titleOfSelectedItem == "JSON"
+        worksheet.runner.run(uri: connection.uri, database: connection.database, query: worksheet.queryView.string, json: json) { [weak worksheet] text in
+            worksheet?.outputView.string = text
+            worksheet?.status.stringValue = "Done"
         }
     }
 
-    @objc private func cancelQuery() {
-        runner.cancel()
-        status.stringValue = "Cancelled"
+    @objc func cancelQuery() {
+        currentWorksheet?.runner.cancel()
+        currentWorksheet?.status.stringValue = "Cancelled"
     }
 
-    @objc private func clearOutput() {
-        outputView.string = ""
+    @objc func clearOutput() {
+        currentWorksheet?.outputView.string = ""
     }
 
-    @objc private func saveWorksheet() {
+    @objc func saveWorksheet() {
+        guard let worksheet = currentWorksheet else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.javaScript]
         panel.nameFieldStringValue = "worksheet.mongo.js"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try queryView.string.write(to: url, atomically: true, encoding: .utf8)
-            status.stringValue = "Saved"
+            try worksheet.queryView.string.write(to: url, atomically: true, encoding: .utf8)
+            worksheet.status.stringValue = "Saved"
         } catch {
-            outputView.string = error.localizedDescription
+            worksheet.outputView.string = error.localizedDescription
         }
     }
 
-    @objc private func loadWorksheet() {
+    @objc func loadWorksheet() {
+        guard let worksheet = currentWorksheet else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.javaScript, .plainText]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            queryView.string = try String(contentsOf: url, encoding: .utf8)
-            status.stringValue = "Loaded"
+            worksheet.queryView.string = try String(contentsOf: url, encoding: .utf8)
+            worksheet.status.stringValue = "Loaded"
         } catch {
-            outputView.string = error.localizedDescription
+            worksheet.outputView.string = error.localizedDescription
         }
     }
 }

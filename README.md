@@ -8,7 +8,8 @@ Small standalone macOS MongoDB worksheet client.
 - Query engine: `mongosh`, so worksheets use real MongoDB shell JavaScript.
 - Connection storage: name/default database in `UserDefaults`, full URI in macOS Keychain.
 - Database tree: read-only database/collection metadata loaded through `mongosh`.
-- Worksheet storage: normal `.js` files on disk.
+- Worksheets: multiple tabs, each with its own target connection, database, query editor, output, and runner.
+- Worksheet storage: save/load normal `.js` files on disk.
 - No admin UI: destructive actions are only possible if typed as a query.
 
 This keeps idle memory low: no Electron, no embedded browser, no local web server, and no background database sessions.
